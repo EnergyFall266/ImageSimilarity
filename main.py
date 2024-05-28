@@ -39,81 +39,95 @@ async def read_root():
 
 @app.post("/add_image")
 async def add_image(image: List[AddImage]):
-    for i in image:
-        image = base64.b64decode(i.image)
-        with open(f"images/{i.image_name}.jpg", "wb") as f:
-            f.write(image)
-    
-    return {"status": "success"}
-
+    try:
+        for i in image:
+            image = base64.b64decode(i.image)
+            with open(f"images/{i.image_name}.jpg", "wb") as f:
+                f.write(image)
+        
+        return {"status": "success",
+                "codRet:" : 0}
+    except:
+        return {"status": "error",
+                "codRet:" : 1}
 
 
 @app.post("/clear_data")
 async def clear_data(data: Cleardata):
-
-    for root, dirs, files in os.walk('./images'):
-        for file in files:
-            os.remove(root  + '/'+ file)
-    return {"status": "cleared"}
-
+    try:
+        for root, dirs, files in os.walk('./images'):
+            for file in files:
+                os.remove(root  + '/'+ file)
+        return {"status": "cleared",
+                "codRet:" : 0}
+    except:
+        return {"status": "error",
+                "codRet:" : 1}
+    
 @app.post("/search_image")
 async def search_image(data: SearchImage):
 # compile all images in the folder
-    for root, dirs, files in os.walk('./images'):
-        for file in files:
-            if file.endswith('jpg'):
-                images.append(root  + '/'+ file)
-            if file.endswith('png'):
-                images.append(root  + '/'+ file)
+    try:
+        for root, dirs, files in os.walk('./images'):
+            for file in files:
+                if file.endswith('jpg'):
+                    images.append(root  + '/'+ file)
+                if file.endswith('png'):
+                    images.append(root  + '/'+ file)
 
-    def add_vector_to_index(embedding, index):
-        vector = embedding.detach().cpu().numpy()
-        vector = np.float32(vector)
-        faiss.normalize_L2(vector)
-        index.add(vector)
+        def add_vector_to_index(embedding, index):
+            vector = embedding.detach().cpu().numpy()
+            vector = np.float32(vector)
+            faiss.normalize_L2(vector)
+            index.add(vector)
 
-    index = faiss.IndexFlatL2(384)
+        index = faiss.IndexFlatL2(384)
 
-    for image_path in images:
-        img = Image.open(image_path).convert('RGB')
+        for image_path in images:
+            img = Image.open(image_path).convert('RGB')
+            with torch.no_grad():
+                inputs = processor(images=img, return_tensors="pt").to(device)
+                outputs = model(**inputs)
+            features = outputs.last_hidden_state
+            add_vector_to_index( features.mean(dim=1), index)
+
+        faiss.write_index(index,"vector.index")
+
+    # search for the image
+
+        image = base64.b64decode(data.image)
+        with open("search.jpg", "wb") as f:
+            f.write(image)
+        img = Image.open("search.jpg").convert('RGB')
         with torch.no_grad():
             inputs = processor(images=img, return_tensors="pt").to(device)
             outputs = model(**inputs)
-        features = outputs.last_hidden_state
-        add_vector_to_index( features.mean(dim=1), index)
+        
+        embeddings = outputs.last_hidden_state
+        embeddings = embeddings.mean(dim=1)
+        vector = embeddings.detach().cpu().numpy()
+        vector = np.float32(vector)
+        faiss.normalize_L2(vector)
 
-    faiss.write_index(index,"vector.index")
+        index = faiss.read_index("vector.index")
+        print(images)
+        print(len(images))
+        if len(images)<5:
+            k= len(images)
+        else:
+            k=5
+        d,i = index.search(vector,k)
+        print('Images:', [images[index] for index in i[0]])
 
-# search for the image
+        # Convert images to base64
+        base64_images = []
+        for index in i[0]:
+            with open(images[index], "rb") as img_file:
+                base64_images.append(base64.b64encode(img_file.read()).decode('utf-8'))
 
-    image = base64.b64decode(data.image)
-    with open("search.jpg", "wb") as f:
-        f.write(image)
-    img = Image.open("search.jpg").convert('RGB')
-    with torch.no_grad():
-        inputs = processor(images=img, return_tensors="pt").to(device)
-        outputs = model(**inputs)
-    
-    embeddings = outputs.last_hidden_state
-    embeddings = embeddings.mean(dim=1)
-    vector = embeddings.detach().cpu().numpy()
-    vector = np.float32(vector)
-    faiss.normalize_L2(vector)
-
-    index = faiss.read_index("vector.index")
-    print(images)
-    print(len(images))
-    if len(images)<5:
-        k= len(images)
-    else:
-        k=5
-    d,i = index.search(vector,k)
-    print('Images:', [images[index] for index in i[0]])
-
-    # Convert images to base64
-    base64_images = []
-    for index in i[0]:
-        with open(images[index], "rb") as img_file:
-            base64_images.append(base64.b64encode(img_file.read()).decode('utf-8'))
-
-    return {"status": "success", "result": base64_images}
+        return {"status": "success",
+                "codRet": 0,
+                "result": base64_images}
+    except:
+        return {"status": "error",
+                "codRet:" : 1}
